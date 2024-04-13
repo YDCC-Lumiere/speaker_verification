@@ -9,8 +9,10 @@ from lightning import LightningModule
 import torchaudio
 
 from dataset.feature_extractor import FilterbankFeatures
+from dataset.transforms import SpecAugment
 from losses.aam_loss import AngularMarginLoss
 from utils import compute_eer, compute_mindcf
+from optim.lr_scheduler import CosineAnnealing
 
 
 class SqueezeExcitation(nn.Module):
@@ -118,20 +120,15 @@ class TitaNet(LightningModule):
                  # optimizer config
                  optimizer_config: Dict,
                  scheduler_config: Optional[Dict],
+                 # spec augmentation config
+                 num_time_masks: int = 5,
+                 time_width: float = 0.03,
+                 num_freq_masks: int = 3,
+                 freq_width: int = 4,
+                 p: float = 0.5,
                  ) -> None:
         super().__init__()
         self.save_hyperparameters()
-
-        self.feature_extractor = FilterbankFeatures(
-            normalize="per_feature",
-            n_window_size=int(0.025 * 16000),
-            n_window_stride=int(0.01 * 16000),
-            window="hann",
-            nfilt=80,
-            n_fft=512,
-            frame_splicing=1,
-            dither=0.00001
-        )
 
         # Prolog Block and Epilog Block do not have dropout
         self.prolog = nn.Sequential(
@@ -166,6 +163,19 @@ class TitaNet(LightningModule):
             nn.BatchNorm1d(embedding_size)
         )
 
+        self.feature_extractor = FilterbankFeatures(
+            normalize="per_feature",
+            n_window_size=int(0.025 * 16000),
+            n_window_stride=int(0.01 * 16000),
+            window="hann",
+            nfilt=80,
+            n_fft=512,
+            frame_splicing=1,
+            dither=0.00001
+        )
+
+        self.spec_augment = SpecAugment(num_freq_masks, freq_width, num_time_masks, int(100 * time_width), p)
+
         # just use for training
         self.loss = AngularMarginLoss(embedding_size, num_classes, scale, margin)
 
@@ -180,6 +190,8 @@ class TitaNet(LightningModule):
         batch_size = x.size(0)
         lengths = torch.ones(batch_size, device=x.device) * lengths
         x, _ = self.feature_extractor(x, lengths)
+        if self.training:
+            x = self.spec_augment(x)
 
         x = self.prolog(x)
         x = self.mega_blocks(x)
@@ -246,6 +258,9 @@ class TitaNet(LightningModule):
         elif self.scheduler_config['name'] == 'CosineAnnealingLR':
             self.scheduler_config.pop('name')
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **self.scheduler_config)
+        elif self.scheduler_config['name'] == 'CosineAnnealingWarmup':
+            self.scheduler_config.pop('name')
+            scheduler = CosineAnnealing(optimizer, **self.scheduler_config)
         else:
             raise ValueError
         lr_scheduler_config = {
@@ -257,27 +272,6 @@ class TitaNet(LightningModule):
             "interval": interval,
         }
         return [optimizer], [lr_scheduler_config]
-
-    def get_embeddings(self, audio: torch.Tensor) -> torch.Tensor:
-        audio = audio.squeeze()
-        length = audio.size(0)
-        audio = audio[:length // 8000 * 8000]
-        length = audio.size(0)
-        chunk_audio = torch.stack([audio[8000 * i:8000 * (i + 2)] for i in range(0, length // 8000 - 1)],
-                                  dim=0)
-        embeddings = self.forward(chunk_audio)
-        return embeddings
-
-    def get_avg_embedding(self, audio:torch.Tensor) -> torch.Tensor:
-        embeddings = self.get_embeddings(audio)
-        return embeddings.mean(dim=0)
-
-    def compare(self, true_embedding: torch.Tensor, audio: torch.Tensor):
-        embeddings = self.get_embeddings(audio)
-        scores = F.cosine_similarity(true_embedding.expand_as(embeddings), embeddings)
-        scores = (scores + 1) / 2
-        similar_segments = (scores > 0.7).mean().item()
-        return similar_segments > 0.7
 
     def predict(self, wav_1, wav_2):
         audio_1, _ = torchaudio.load(wav_1)
