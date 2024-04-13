@@ -1,5 +1,6 @@
 import os
 from typing import Tuple, List, Dict, Optional
+import json
 
 import torch
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
@@ -121,6 +122,20 @@ class AttentiveStatsPooling(nn.Module):
         stds = torch.sqrt(var.clamp(min=self.eps))
 
         return torch.cat([means, stds], dim=1).unsqueeze(2)
+
+
+def verify_embs(original_emb, verify_emb):
+    # embeddings = self.get_embeddings(audio)
+    # scores = F.cosine_similarity(true_embedding.expand_as(embeddings), embeddings)
+    # scores = (scores + 1) / 2
+    # similar_segments = (scores > 0.7).mean().item()
+    # return similar_segments > 0.7
+
+    original_emb = torch.tensor(original_emb)
+    verify_emb = torch.tensor(verify_emb)
+    score = torch.nn.functional.cosine_similarity(original_emb, verify_emb, dim=0)
+    score = (score + 1) / 2
+    return score.item() > 0.7
 
 
 class TitaNet(LightningModule):
@@ -299,24 +314,22 @@ class TitaNet(LightningModule):
         return [optimizer], [lr_scheduler_config]
 
     def get_embeddings(self, audio: torch.Tensor) -> torch.Tensor:
+        audio, _ = torchaudio.load(audio)
         audio = audio.squeeze()
         length = audio.size(0)
+        if length < 8000:
+            print(audio.size())
+            audio = torch.cat((audio, torch.zeros(8000 - length)))
+            length = 8000
         audio = audio[:length // 8000 * 8000]
         length = audio.size(0)
         chunk_audio = torch.stack([audio[8000 * i:8000 * (i + 2)] for i in range(0, length // 8000 - 1)], dim=0)
         embeddings = self.forward(chunk_audio)
         return embeddings
 
-    def get_avg_embedding(self, audio: torch.Tensor) -> torch.Tensor:
+    def get_avg_embedding(self, audio: str) -> torch.Tensor:
         embeddings = self.get_embeddings(audio)
-        return embeddings.mean(dim=0)
-
-    def compare(self, true_embedding: torch.Tensor, audio: torch.Tensor):
-        embeddings = self.get_embeddings(audio)
-        scores = F.cosine_similarity(true_embedding.expand_as(embeddings), embeddings)
-        scores = (scores + 1) / 2
-        similar_segments = (scores > 0.7).mean().item()
-        return similar_segments > 0.7
+        return embeddings.mean(dim=0).tolist()
 
     def predict(self, wav_1, wav_2):
         audio_1, _ = torchaudio.load(wav_1)
@@ -350,19 +363,12 @@ class TitaNet(LightningModule):
 
 
 if __name__ == '__main__':
-    model = TitaNet(
-        80,
-        128,
-        4,
-        128,
-        5,
-        3,
-        1,
-        60,
-        32,
-        0.1,
-        32,
-        30,
-        0.1,
+    model = TitaNet
+    # norm_filename = '/home/anhkhoa/workplace/speaker_verification/temp/norm_audio.wav'
+    # os.system(f'ffmpeg -y -i /home/anhkhoa/workplace/speaker_verification/temp/3f997cc0fffd53d82398ccc6174a1b5f.wav -ar 16000 -ab 256000 -ac 1 {norm_filename}')
+    #
+    # model.get_avg_embedding(norm_filename)
+    original = torch.rand(192).tolist()
+    verify = torch.rand(192).tolist()
+    model.verify(original, verify)
 
-    )
