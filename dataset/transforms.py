@@ -1,6 +1,7 @@
 import math
 from typing import List, Tuple, Optional
 import random
+import math
 
 import torch
 
@@ -12,7 +13,7 @@ class AudioTransform:
     def __init__(self):
         pass
 
-    def __call__(self, waveform:torch.Tensor):
+    def __call__(self, waveform: torch.Tensor):
         pass
 
 
@@ -89,7 +90,7 @@ class Noise(AudioTransform):
 
     def __call__(self, waveform: torch.Tensor):
         noise_wav = random.choice(self.noise_wavs)
-        noise_waveform = torchaudio.load(noise_wav)
+        noise_waveform, _ = torchaudio.load(noise_wav)
         clean_amp = torch.sqrt(torch.mean(noise_waveform ** 2, dim=1, keepdim=True))
 
         snr = random.uniform(*self.snrs)
@@ -99,6 +100,9 @@ class Noise(AudioTransform):
 
         noise_amp = torch.sqrt(torch.mean(noise_waveform ** 2, dim=1, keepdim=True))
         noise_waveform *= new_noise_amp / (noise_amp + 1e-14)
+        while noise_waveform.size(1) < waveform.size(1):
+            noise_waveform = torch.cat((noise_waveform, noise_waveform), dim=1)
+        noise_waveform = noise_waveform[:, :waveform.size(1)]
 
         waveform += noise_waveform
         return waveform

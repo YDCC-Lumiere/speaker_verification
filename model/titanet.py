@@ -48,25 +48,32 @@ class MegaBlock(nn.Module):
         super().__init__()
 
         padding = (kernel_size - 1) // 2
-        self.base_blocks = nn.Sequential(
-            *[
+        self.base_blocks = [
                 nn.Sequential(
                     nn.Conv1d(hidden_size, hidden_size, kernel_size=kernel_size, bias=False, padding=padding,
                               groups=hidden_size),
                     nn.Conv1d(hidden_size, hidden_size, kernel_size=1, bias=False),
-                    nn.BatchNorm1d(hidden_size),
+                    nn.BatchNorm1d(hidden_size, eps=1e-3),
                     nn.ReLU(),
-                    nn.Dropout(drop_out)
+
                 )
-                for _ in range(num_blocks)
+                for _ in range(num_blocks - 1)
             ]
+        self.base_blocks.append(
+                nn.Sequential(
+                    nn.Conv1d(hidden_size, hidden_size, kernel_size=kernel_size, bias=False, padding=padding,
+                              groups=hidden_size),
+                    nn.Conv1d(hidden_size, hidden_size, kernel_size=1, bias=False),
+                    nn.BatchNorm1d(hidden_size, eps=1e-3),
+                )
         )
+        self.base_blocks = nn.Sequential(*self.base_blocks)
 
         self.se = SqueezeExcitation(hidden_size, reduction_rate)
 
         self.residual_connection = nn.Sequential(
             nn.Conv1d(hidden_size, hidden_size, kernel_size=1, bias=False),
-            nn.BatchNorm1d(hidden_size)
+            nn.BatchNorm1d(hidden_size, eps=1e-3)
         )
 
         self.drop_out = drop_out
@@ -75,30 +82,45 @@ class MegaBlock(nn.Module):
         residual_x = x
         x = self.base_blocks(x)
         x = self.se(x)
-        x = self.residual_connection(residual_x) + x
-        return F.dropout(F.relu(x), self.drop_out, self.training)
+        x = F.relu(self.residual_connection(residual_x) + x)
+        return x
 
 
 class AttentiveStatsPooling(nn.Module):
     def __init__(self, size: int, hidden_size: int, eps: float = 1e-6):
         super().__init__()
         self.attention = nn.Sequential(
-            nn.Linear(size, hidden_size),
+            nn.Conv1d(size * 3, hidden_size, kernel_size=1, stride=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_size, eps=1e-3),
             nn.Tanh(),
-            nn.Linear(hidden_size, size),
+            nn.Conv1d(hidden_size, size, kernel_size=1),
             nn.Softmax(dim=-2)
         )
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert x.dim() == 3
-        attention_rate = self.attention(x.transpose(1, 2)).transpose(1, 2)
+        feature_size = x.size(2)
+        # attention_rate = self.attention(x.transpose(1, 2)).transpose(1, 2)
+
+        means = torch.sum(x, dim=2)
+        var = torch.sum(x ** 2, dim=2) - means ** 2
+        stds = torch.sqrt(var.clamp(min=self.eps))
+
+        means = means.unsqueeze(2).repeat(1, 1, feature_size)
+        stds = stds.unsqueeze(2).repeat(1, 1, feature_size)
+        attn = torch.cat([x, means, stds], dim=1)
+
+        # attention statistics
+        attn = self.attention(attn)  # attention pass
+        attention_rate = F.softmax(attn, dim=2)
 
         means = torch.sum(attention_rate * x, dim=2)
         var = torch.sum(attention_rate * x ** 2, dim=2) - means ** 2
         stds = torch.sqrt(var.clamp(min=self.eps))
 
-        return torch.cat([means, stds], dim=1)
+        return torch.cat([means, stds], dim=1).unsqueeze(2)
 
 
 class TitaNet(LightningModule):
@@ -130,39 +152,6 @@ class TitaNet(LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        # Prolog Block and Epilog Block do not have dropout
-        self.prolog = nn.Sequential(
-            nn.Conv1d(mels, hidden_size, kernel_size=prolog_kernel_size, bias=False, padding=1),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU()
-        )
-
-        mega_block_kernel_size = [3, 7, 11, 15]
-        self.mega_blocks = nn.Sequential(
-            *[
-                MegaBlock(hidden_size, mega_block_kernel_size[i], se_reduction_rate, sub_blocks, drop_out)
-                for i in range(4)
-            ]
-        )
-
-        padding = (epilog_kernel_size - 1) // 2
-        # Prolog Block and Epilog Block do not have dropout
-        self.epilog = nn.Sequential(
-            nn.Conv1d(hidden_size, encoder_size, kernel_size=epilog_kernel_size, padding=padding, bias=False),
-            nn.BatchNorm1d(encoder_size),
-            nn.ReLU()
-        )
-
-        self.pooling = nn.Sequential(
-            AttentiveStatsPooling(encoder_size, hidden_pooling_size),
-            nn.BatchNorm1d(encoder_size * 2)
-        )
-
-        self.embedding_linear = nn.Sequential(
-            nn.Linear(encoder_size * 2, embedding_size, bias=False),
-            nn.BatchNorm1d(embedding_size)
-        )
-
         self.feature_extractor = FilterbankFeatures(
             normalize="per_feature",
             n_window_size=int(0.025 * 16000),
@@ -172,6 +161,40 @@ class TitaNet(LightningModule):
             n_fft=512,
             frame_splicing=1,
             dither=0.00001
+        )
+
+        # Prolog Block and Epilog Block do not have dropout
+        self.prolog = nn.Sequential(
+            nn.Conv1d(mels, mels, kernel_size=prolog_kernel_size, bias=False, padding=1, groups=mels),
+            nn.Conv1d(mels, hidden_size, kernel_size=1, bias=False),
+            nn.BatchNorm1d(hidden_size, eps=1e-3),
+            SqueezeExcitation(hidden_size, se_reduction_rate),
+            nn.ReLU(),
+        )
+
+        mega_block_kernel_size = [7, 11, 15]
+        self.mega_blocks = nn.Sequential(
+            *[
+                MegaBlock(hidden_size, mega_block_kernel_size[i], se_reduction_rate, sub_blocks, drop_out)
+                for i in range(3)
+            ]
+        )
+
+        padding = (epilog_kernel_size - 1) // 2
+        # Prolog Block and Epilog Block do not have dropout
+        self.epilog = nn.Sequential(
+            nn.Conv1d(hidden_size, hidden_size, kernel_size=epilog_kernel_size, padding=padding, bias=False, groups=hidden_size),
+            nn.Conv1d(hidden_size, encoder_size, kernel_size=1, bias=False),
+            nn.BatchNorm1d(encoder_size, eps=1e-3),
+            SqueezeExcitation(encoder_size, se_reduction_rate),
+            nn.ReLU(),
+        )
+
+        self.pooling = AttentiveStatsPooling(encoder_size, hidden_pooling_size)
+
+        self.embedding_linear = nn.Sequential(
+            nn.BatchNorm1d(encoder_size * 2, eps=1e-3),
+            nn.Conv1d(encoder_size * 2, embedding_size, kernel_size=1)
         )
 
         self.spec_augment = SpecAugment(num_freq_masks, freq_width, num_time_masks, int(100 * time_width), p)
@@ -198,7 +221,7 @@ class TitaNet(LightningModule):
         x = self.epilog(x)
 
         x = self.pooling(x)
-        x = self.embedding_linear(x)
+        x = self.embedding_linear(x).squeeze(-1)
         x = F.normalize(x, p=2, dim=1)
         return x
 
@@ -212,7 +235,6 @@ class TitaNet(LightningModule):
 
     def validation_step(self, batch: Tuple[torch.Tensor, List[int], List[int]], batch_idx) -> None:
         chunks_audios, lengths, labels = batch
-        device = chunks_audios.device
         embeddings = self.forward(chunks_audios)
         avg_embeddings_speaker_1 = []
         avg_embeddings_speaker_2 = []
@@ -242,6 +264,9 @@ class TitaNet(LightningModule):
         if self.optimizer_config['name'] == 'SGD':
             self.optimizer_config.pop('name')
             optimizer = torch.optim.SGD(self.parameters(), **self.optimizer_config)
+        if self.optimizer_config['name'] == 'AdamW':
+            self.optimizer_config.pop('name')
+            optimizer = torch.optim.AdamW(self.parameters(), **self.optimizer_config)
         elif self.optimizer_config['name'] == 'Adam':
             self.optimizer_config.pop('name')
             optimizer = torch.optim.Adam(self.parameters(), **self.optimizer_config)
@@ -272,6 +297,26 @@ class TitaNet(LightningModule):
             "interval": interval,
         }
         return [optimizer], [lr_scheduler_config]
+
+    def get_embeddings(self, audio: torch.Tensor) -> torch.Tensor:
+        audio = audio.squeeze()
+        length = audio.size(0)
+        audio = audio[:length // 8000 * 8000]
+        length = audio.size(0)
+        chunk_audio = torch.stack([audio[8000 * i:8000 * (i + 2)] for i in range(0, length // 8000 - 1)], dim=0)
+        embeddings = self.forward(chunk_audio)
+        return embeddings
+
+    def get_avg_embedding(self, audio: torch.Tensor) -> torch.Tensor:
+        embeddings = self.get_embeddings(audio)
+        return embeddings.mean(dim=0)
+
+    def compare(self, true_embedding: torch.Tensor, audio: torch.Tensor):
+        embeddings = self.get_embeddings(audio)
+        scores = F.cosine_similarity(true_embedding.expand_as(embeddings), embeddings)
+        scores = (scores + 1) / 2
+        similar_segments = (scores > 0.7).mean().item()
+        return similar_segments > 0.7
 
     def predict(self, wav_1, wav_2):
         audio_1, _ = torchaudio.load(wav_1)
@@ -306,11 +351,18 @@ class TitaNet(LightningModule):
 
 if __name__ == '__main__':
     model = TitaNet(
-        80, 128, 4, 128, 5, 5, 3, 3, 1, 128, 32, 0.1
-    )
+        80,
+        128,
+        4,
+        128,
+        5,
+        3,
+        1,
+        60,
+        32,
+        0.1,
+        32,
+        30,
+        0.1,
 
-    anchor = torch.rand(3, 80, 100)
-    positive = torch.rand(3, 80, 100)
-    negative = torch.rand(3, 80, 100)
-    loss = model.training_step(0, (anchor, positive, negative))
-    print(loss)
+    )
