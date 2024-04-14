@@ -3,7 +3,9 @@ import warnings
 
 from torch.optim.lr_scheduler import _LRScheduler
 
-
+"""
+<https://github.com/NVIDIA/NeMo/blob/de983ff6eb164944197c0e96807c3ee74119057c/nemo/core/optim/lr_scheduler.py>
+"""
 class WarmupAnnealHoldPolicy(_LRScheduler):
     """Adds warmup kwargs and warmup logic to lr policy.
     All arguments should be passed as kwargs for clarity,

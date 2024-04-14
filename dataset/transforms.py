@@ -110,6 +110,7 @@ class Noise(AudioTransform):
 
 class SpecAugment:
     """
+    <https://github.com/lhotse-speech/lhotse/blob/1b68036d20e5a674c45c01d7719ddacc2d6742ac/lhotse/dataset/signal_transforms.py>
     SpecAugment performs three augmentations:
     - time warping of the feature matrix
     - masking of ranges of features (frequency bands)

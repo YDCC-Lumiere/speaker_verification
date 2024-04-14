@@ -11,7 +11,7 @@ UPLOADFOLDER = 'temp'
 if not os.path.exists(UPLOADFOLDER):
     os.makedirs(UPLOADFOLDER)
 
-model = TitaNet.load_from_checkpoint('../ck.ckpt')
+model = TitaNet.load_from_checkpoint('../ck_1.ckpt')
 
 @app.route('/upload', methods=['POST'])
 def get_embed():

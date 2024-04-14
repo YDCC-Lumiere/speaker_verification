@@ -1,6 +1,9 @@
 import torch
 
 
+"""
+<https://github.com/Wadaboa/titanet/blob/main/src/losses.py>
+"""
 class AngularMarginLoss(torch.nn.Module):
     def __init__(self,
                  embedding_size: int,
@@ -16,12 +19,6 @@ class AngularMarginLoss(torch.nn.Module):
 
     def forward(self, embedding: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         self.logic_linear.weight.data = torch.nn.functional.normalize(self.logic_linear.weight.data)
-
-        # # Normalize inputs
-        # inputs_norms = torch.norm(embedding, p=2, dim=1)
-        # normalized_inputs = embedding / inputs_norms.unsqueeze(-1).repeat(
-        #     1, embedding.size(1)
-        # )
 
         # Set scale
         scales = torch.tensor([self.scale], device=embedding.device).repeat(embedding.size(0))

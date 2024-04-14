@@ -11,7 +11,7 @@ def compute_eer(scores, labels):
 
 def compute_error_rates(scores, labels, eps=1e-6):
     """
-    https://github.com/clovaai/voxceleb_trainer
+    <https://github.com/clovaai/voxceleb_trainer>
     """
     # Sort the scores from smallest to largest, and also get the corresponding
     # indexes of the sorted scores.  We will treat the sorted scores as the
@@ -53,7 +53,7 @@ def compute_error_rates(scores, labels, eps=1e-6):
 
 def compute_mindcf(scores, labels, p_target=1e-2, c_fa=1, c_miss=1, eps=1e-6):
     """
-    https://github.com/clovaai/voxceleb_trainer
+    <https://github.com/clovaai/voxceleb_trainer>
     """
     # Extract false negative and false positive rates
     fnrs, fprs = compute_error_rates(scores, labels)

@@ -8,6 +8,9 @@ from torch import nn
 
 CONSTANT = 1e-5
 
+"""
+<https://github.com/NVIDIA/NeMo/blob/de983ff6eb164944197c0e96807c3ee74119057c/nemo/collections/asr/parts/preprocessing/features.py>
+"""
 
 def splice_frames(x, frame_splicing):
     """ Stacks frames together across feature dim
